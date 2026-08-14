@@ -1,0 +1,11 @@
+target/
+data/
+.git/
+.idea/
+*.iml
+.DS_Store
+.mvn/
+mvnw
+mvnw.cmd
+HELP.md
+PLAN.md
