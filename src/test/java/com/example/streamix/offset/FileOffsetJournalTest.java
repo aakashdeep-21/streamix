@@ -49,4 +49,35 @@ class FileOffsetJournalTest {
 		new FileOffsetJournal(dir).replay(out::put);
 		assertThat(out).isEmpty();
 	}
+
+	@Test
+	void snapshotCompactsJournalAndReplayMergesBoth() {
+		FileOffsetJournal j = new FileOffsetJournal(dir);
+		j.append(new GroupTopicPartition("g", "t", 0), 5);
+		j.append(new GroupTopicPartition("g", "t", 0), 9);
+
+		j.snapshot(Map.of(
+				new GroupTopicPartition("g", "t", 0), 9L,
+				new GroupTopicPartition("g", "t2", 1), 3L));
+		assertThat(Files.exists(dir.resolve("offsets.snapshot"))).isTrue();
+		assertThat(Files.exists(dir.resolve("offsets.log"))).isFalse(); // journal restarts empty
+
+		j.append(new GroupTopicPartition("g", "t", 0), 12);
+		j.close();
+
+		Map<GroupTopicPartition, Long> out = new HashMap<>();
+		new FileOffsetJournal(dir).replay(out::put);
+		assertThat(out).containsExactlyInAnyOrderEntriesOf(Map.of(
+				new GroupTopicPartition("g", "t", 0), 12L, // journal entry wins over snapshot
+				new GroupTopicPartition("g", "t2", 1), 3L));
+	}
+
+	@Test
+	void emptyStateSnapshotIsValid() {
+		FileOffsetJournal j = new FileOffsetJournal(dir);
+		j.snapshot(Map.of());
+		Map<GroupTopicPartition, Long> out = new HashMap<>();
+		new FileOffsetJournal(dir).replay(out::put);
+		assertThat(out).isEmpty();
+	}
 }

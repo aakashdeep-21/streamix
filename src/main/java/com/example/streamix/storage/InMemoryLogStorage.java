@@ -39,8 +39,11 @@ public class InMemoryLogStorage implements LogStorage {
 	@Override
 	public long beginOffset(String topic, int partition) { return partition(topic, partition).beginOffset(); }
 
-	// Recovery hook used by FileLogStorage replay.
-	void restore(String topic, int partition, Message m) { partition(topic, partition).restore(m); }
+	// In-memory retention is age-based only; maxBytes is a file-storage concern.
+	@Override
+	public long enforceRetention(String topic, int partition, long minTimestampMs, long maxBytes) {
+		return partition(topic, partition).trimOlderThan(minTimestampMs);
+	}
 
 	private Partition partition(String topic, int partition) {
 		Partition[] partitions = logs.get(topic);

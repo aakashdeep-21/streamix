@@ -44,8 +44,8 @@ public class BrokerEngine {
 
 	// --- topics ---
 
-	public TopicMetadata createTopic(String name, int partitions) {
-		return topicManager.create(name, partitions);
+	public TopicMetadata createTopic(String name, int partitions, Long retentionMs, Long retentionBytes) {
+		return topicManager.create(name, partitions, retentionMs, retentionBytes);
 	}
 
 	public List<TopicMetadata> listTopics() { return topicManager.list(); }
@@ -118,7 +118,9 @@ public class BrokerEngine {
 		offsetStore.snapshot(groupId, topicFilter).forEach((tp, committed) -> {
 			if (topicManager.find(tp.topic()) == null) return; // ghost rows from deleted topics
 			long end = storage.endOffset(tp.topic(), tp.partition());
-			out.add(new GroupOffsetView(tp.topic(), tp.partition(), committed, end, end - committed));
+			// lag counts only still-retained messages: trimmed ones can never be consumed
+			long effective = Math.max(committed, storage.beginOffset(tp.topic(), tp.partition()));
+			out.add(new GroupOffsetView(tp.topic(), tp.partition(), committed, end, end - effective));
 		});
 		return out;
 	}

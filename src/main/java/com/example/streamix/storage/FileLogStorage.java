@@ -1,13 +1,11 @@
 package com.example.streamix.storage;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -15,7 +13,9 @@ import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 
+import com.example.streamix.config.BrokerProperties;
 import com.example.streamix.core.Message;
 import com.example.streamix.core.TopicMetadata;
 import com.example.streamix.core.TopicPartition;
@@ -23,22 +23,31 @@ import com.example.streamix.core.TopicPartition;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
-// JSON-lines write-through log: memory serves reads, files make every ack'd append durable.
+// Durable log: rolling JSON-lines segments per partition, reads served from disk via sparse indexes.
 public class FileLogStorage implements LogStorage {
 
 	private static final Logger log = LoggerFactory.getLogger(FileLogStorage.class);
 
-	private final InMemoryLogStorage memory = new InMemoryLogStorage();
+	enum FsyncMode { ALWAYS, INTERVAL, NEVER }
+
 	private final ObjectMapper mapper = JsonMapper.builder().build();
 	private final Path topicsDir;
-	private final ConcurrentHashMap<TopicPartition, LogWriter> writers = new ConcurrentHashMap<>();
+	private final long segmentMaxBytes;
+	private final FsyncMode fsyncMode;
+	private final ConcurrentHashMap<TopicPartition, SegmentedPartitionLog> logs = new ConcurrentHashMap<>();
 	private final List<TopicMetadata> recovered = new ArrayList<>();
 
-	public FileLogStorage(Path dataDir) {
-		this.topicsDir = dataDir.resolve("topics");
+	public FileLogStorage(BrokerProperties props) {
+		this.topicsDir = Path.of(props.getDataDir()).resolve("topics");
+		this.segmentMaxBytes = props.getSegmentMaxBytes();
+		try {
+			this.fsyncMode = FsyncMode.valueOf(props.getFsync().trim().toUpperCase());
+		} catch (IllegalArgumentException e) {
+			throw new IllegalArgumentException("streamix.fsync must be one of: always, interval, never");
+		}
 	}
 
-	// Startup-only: rebuild in-memory state from disk before the broker serves traffic.
+	// Startup-only: rebuild all partition logs from disk before the broker serves traffic.
 	public void recover() {
 		try {
 			Files.createDirectories(topicsDir);
@@ -59,14 +68,24 @@ public class FileLogStorage implements LogStorage {
 			return;
 		}
 		TopicMetadata meta = mapper.readValue(Files.readString(metaFile), TopicMetadata.class);
-		memory.createLog(meta);
 		for (int p = 0; p < meta.partitions(); p++) {
-			final int partition = p;
-			JsonLines.replay(partitionFile(meta.name(), p),
-					line -> memory.restore(meta.name(), partition, mapper.readValue(line, Message.class)));
+			migrateV1Layout(dir, p);
+			SegmentedPartitionLog partitionLog = newPartitionLog(meta.name(), p);
+			partitionLog.recover();
+			logs.put(new TopicPartition(meta.name(), p), partitionLog);
 		}
 		recovered.add(meta);
 		log.info("recovered topic '{}' ({} partitions)", meta.name(), meta.partitions());
+	}
+
+	// Phase 1 stored a single <p>.log per partition; it becomes segment 0 of the segmented layout.
+	private void migrateV1Layout(Path topicDir, int partition) throws IOException {
+		Path old = topicDir.resolve(partition + ".log");
+		if (!Files.isRegularFile(old)) return;
+		Path segmentDir = topicDir.resolve(String.valueOf(partition));
+		Files.createDirectories(segmentDir);
+		Files.move(old, segmentDir.resolve(String.format("%020d.log", 0L)));
+		log.info("migrated v1 log {} into segmented layout", old);
 	}
 
 	@Override
@@ -74,29 +93,31 @@ public class FileLogStorage implements LogStorage {
 
 	@Override
 	public void createLog(TopicMetadata meta) {
-		memory.createLog(meta);
 		try {
 			Path dir = topicsDir.resolve(meta.name());
 			Files.createDirectories(dir);
 			Files.writeString(dir.resolve("meta.json"), mapper.writeValueAsString(meta));
+			for (int p = 0; p < meta.partitions(); p++) {
+				SegmentedPartitionLog partitionLog = newPartitionLog(meta.name(), p);
+				partitionLog.recover(); // empty dir → zeroed state
+				logs.put(new TopicPartition(meta.name(), p), partitionLog);
+			}
 		} catch (IOException e) {
-			memory.deleteLog(meta.name());
-			throw new UncheckedIOException("failed to create log dir for topic '" + meta.name() + "'", e);
+			deleteLog(meta.name());
+			throw new UncheckedIOException("failed to create log dirs for topic '" + meta.name() + "'", e);
 		}
 	}
 
 	@Override
 	public void deleteLog(String topic) {
-		// Close writers first so the delete succeeds and racing appends fail fast.
-		writers.entrySet().removeIf(e -> {
+		logs.entrySet().removeIf(e -> {
 			if (!e.getKey().topic().equals(topic)) return false;
 			e.getValue().close();
 			return true;
 		});
-		memory.deleteLog(topic);
 		Path dir = topicsDir.resolve(topic);
 		try (Stream<Path> walk = Files.walk(dir)) {
-			walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+			walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
 				try {
 					Files.delete(p);
 				} catch (IOException ex) {
@@ -112,62 +133,56 @@ public class FileLogStorage implements LogStorage {
 
 	@Override
 	public Message append(String topic, int partition, String key, Object value, Map<String, String> headers) {
-		LogWriter writer = writers.computeIfAbsent(new TopicPartition(topic, partition),
-				tp -> new LogWriter(partitionFile(tp.topic(), tp.partition())));
-		// Lock spans offset assignment + file append so file order always matches offset order.
-		synchronized (writer) {
-			Message m = memory.append(topic, partition, key, value, headers);
-			writer.writeLine(mapper.writeValueAsString(m));
-			return m;
-		}
+		return partitionLog(topic, partition).append(key, value, headers);
 	}
 
 	@Override
 	public List<Message> read(String topic, int partition, long fromOffset, int max) {
-		return memory.read(topic, partition, fromOffset, max);
+		return partitionLog(topic, partition).read(fromOffset, max);
 	}
 
 	@Override
-	public long endOffset(String topic, int partition) { return memory.endOffset(topic, partition); }
+	public long endOffset(String topic, int partition) { return partitionLog(topic, partition).endOffset(); }
 
 	@Override
-	public long beginOffset(String topic, int partition) { return memory.beginOffset(topic, partition); }
+	public long beginOffset(String topic, int partition) { return partitionLog(topic, partition).beginOffset(); }
+
+	@Override
+	public long enforceRetention(String topic, int partition, long minTimestampMs, long maxBytes) {
+		return partitionLog(topic, partition).enforceRetention(minTimestampMs, maxBytes);
+	}
+
+	@Override
+	public long totalRetainedBytes() {
+		return logs.values().stream().mapToLong(SegmentedPartitionLog::sizeBytes).sum();
+	}
+
+	@Override
+	public int totalSegments() {
+		return logs.values().stream().mapToInt(SegmentedPartitionLog::segmentCount).sum();
+	}
+
+	// ALWAYS syncs inline per append; NEVER leaves flushing to the OS entirely.
+	@Scheduled(fixedDelayString = "${streamix.fsync-interval-ms:1000}")
+	public void fsyncTick() {
+		if (fsyncMode != FsyncMode.INTERVAL) return;
+		logs.values().forEach(SegmentedPartitionLog::sync);
+	}
 
 	// Spring auto-invokes close() on context shutdown.
 	public void close() {
-		writers.values().forEach(LogWriter::close);
-		writers.clear();
+		logs.values().forEach(SegmentedPartitionLog::close);
+		logs.clear();
 	}
 
-	private Path partitionFile(String topic, int partition) {
-		return topicsDir.resolve(topic).resolve(partition + ".log");
+	private SegmentedPartitionLog partitionLog(String topic, int partition) {
+		SegmentedPartitionLog partitionLog = logs.get(new TopicPartition(topic, partition));
+		if (partitionLog == null) throw new IllegalStateException("no log for topic '" + topic + "' partition " + partition);
+		return partitionLog;
 	}
 
-	// One appender per partition file; callers synchronize on the instance.
-	private static final class LogWriter {
-
-		private final Path file;
-		private BufferedWriter out;
-
-		LogWriter(Path file) { this.file = file; }
-
-		void writeLine(String line) {
-			try {
-				if (out == null) out = JsonLines.openAppend(file);
-				out.write(line);
-				out.write('\n');
-				out.flush();
-			} catch (IOException e) {
-				throw new UncheckedIOException("append failed for " + file, e);
-			}
-		}
-
-		void close() {
-			try {
-				if (out != null) out.close();
-			} catch (IOException ignored) {
-				// best-effort close on shutdown/delete
-			}
-		}
+	private SegmentedPartitionLog newPartitionLog(String topic, int partition) {
+		return new SegmentedPartitionLog(topicsDir.resolve(topic).resolve(String.valueOf(partition)),
+				mapper, segmentMaxBytes, fsyncMode == FsyncMode.ALWAYS);
 	}
 }

@@ -11,6 +11,7 @@ public class Partition {
 	private final ArrayList<Message> log = new ArrayList<>();
 	private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 	private long nextOffset = 0;
+	private long beginOffset = 0;
 
 	public Message append(String key, Object value, Map<String, String> headers, long timestamp) {
 		lock.writeLock().lock();
@@ -40,12 +41,29 @@ public class Partition {
 	public List<Message> read(long fromOffset, int max) {
 		lock.readLock().lock();
 		try {
-			if (fromOffset >= nextOffset || max <= 0) return List.of();
-			int from = (int) Math.max(fromOffset, 0);
-			int to = (int) Math.min(nextOffset, fromOffset + max);
-			return List.copyOf(log.subList(from, to));
+			long from = Math.max(fromOffset, beginOffset);
+			if (from >= nextOffset || max <= 0) return List.of();
+			int fromIdx = (int) (from - beginOffset);
+			int toIdx = (int) Math.min(log.size(), fromIdx + (long) max);
+			return List.copyOf(log.subList(fromIdx, toIdx));
 		} finally {
 			lock.readLock().unlock();
+		}
+	}
+
+	// Retention path: drop head messages older than the cutoff; size-based trim is file-storage-only.
+	public long trimOlderThan(long minTimestampMs) {
+		lock.writeLock().lock();
+		try {
+			int k = 0;
+			while (k < log.size() && log.get(k).timestamp() < minTimestampMs) k++;
+			if (k > 0) {
+				log.subList(0, k).clear();
+				beginOffset += k;
+			}
+			return k;
+		} finally {
+			lock.writeLock().unlock();
 		}
 	}
 
@@ -58,5 +76,12 @@ public class Partition {
 		}
 	}
 
-	public long beginOffset() { return 0; }
+	public long beginOffset() {
+		lock.readLock().lock();
+		try {
+			return beginOffset;
+		} finally {
+			lock.readLock().unlock();
+		}
+	}
 }

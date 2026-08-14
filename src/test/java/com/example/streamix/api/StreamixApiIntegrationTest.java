@@ -306,6 +306,28 @@ class StreamixApiIntegrationTest {
 				.andExpect(jsonPath("$.length()").value(0));
 	}
 
+	@Test
+	@Order(25)
+	void topicRetentionOverridesAreStoredAndVisible() throws Exception {
+		mvc.perform(post("/api/v1/topics").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"name\":\"audit\",\"partitions\":1,\"retentionMs\":86400000,\"retentionBytes\":1048576}"))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.retentionMs").value(86400000));
+		mvc.perform(get("/api/v1/topics/audit"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.retentionMs").value(86400000))
+				.andExpect(jsonPath("$.retentionBytes").value(1048576));
+	}
+
+	@Test
+	@Order(26)
+	void negativeRetentionOverrideRejected() throws Exception {
+		mvc.perform(post("/api/v1/topics").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"name\":\"bad-retention\",\"partitions\":1,\"retentionMs\":-5}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error").value("INVALID_ARGUMENT"));
+	}
+
 	private static Set<String> toKeySet(String pollBody) {
 		return json.readValue(pollBody, PollView.class).messages().stream()
 				.map(m -> m.topic() + "-" + m.partition() + "@" + m.offset())

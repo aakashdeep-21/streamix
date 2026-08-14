@@ -32,14 +32,17 @@ public class TopicManager {
 		storage.recoveredTopics().forEach(meta -> topics.put(meta.name(), meta));
 	}
 
-	public TopicMetadata create(String name, int partitions) {
+	public TopicMetadata create(String name, int partitions, Long retentionMs, Long retentionBytes) {
 		if (name == null || !NAME.matcher(name).matches()) {
 			throw BrokerException.invalidArgument("topic name must match [a-zA-Z0-9][a-zA-Z0-9._-]* (max 255 chars)");
 		}
 		if (partitions < 1 || partitions > props.getMaxPartitionsPerTopic()) {
 			throw BrokerException.invalidArgument("partitions must be between 1 and " + props.getMaxPartitionsPerTopic());
 		}
-		TopicMetadata meta = new TopicMetadata(name, partitions, System.currentTimeMillis());
+		if ((retentionMs != null && retentionMs < 1) || (retentionBytes != null && retentionBytes < 1)) {
+			throw BrokerException.invalidArgument("retentionMs and retentionBytes overrides must be positive when set");
+		}
+		TopicMetadata meta = new TopicMetadata(name, partitions, System.currentTimeMillis(), retentionMs, retentionBytes);
 		if (topics.putIfAbsent(name, meta) != null) throw BrokerException.duplicateTopic(name);
 		try {
 			storage.createLog(meta);

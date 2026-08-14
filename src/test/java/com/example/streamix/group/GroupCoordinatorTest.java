@@ -39,7 +39,7 @@ class GroupCoordinatorTest {
 		topicManager = new TopicManager(storage, props);
 		offsetStore = new OffsetStore(new NoopOffsetJournal());
 		coordinator = new GroupCoordinator(topicManager, offsetStore, storage, props, clock);
-		topicManager.create("orders", 4);
+		topicManager.create("orders", 4, null, null);
 	}
 
 	private void publish(int partition, String value) {
@@ -192,6 +192,20 @@ class GroupCoordinatorTest {
 	void registrationValidatesTopicAndTimeout() {
 		assertCode(() -> coordinator.register("g", "c1", Set.of("ghost"), null), ErrorCode.UNKNOWN_TOPIC);
 		assertCode(() -> coordinator.register("g", "c1", Set.of("orders"), 10L), ErrorCode.INVALID_ARGUMENT);
+	}
+
+	@Test
+	void trimmedMessagesAreSkippedAndOffsetsContinue() {
+		coordinator.register("g", "c1", Set.of("orders"), null);
+		publish(0, "old1");
+		publish(0, "old2");
+		assertThat(storage.enforceRetention("orders", 0, Long.MAX_VALUE, -1)).isEqualTo(2);
+
+		assertThat(coordinator.poll("g", "c1", 10)).isEmpty(); // trimmed data is gone, not an error
+		publish(0, "fresh");
+		List<PolledMessage> polled = coordinator.poll("g", "c1", 10);
+		assertThat(polled).hasSize(1);
+		assertThat(polled.get(0).message().offset()).isEqualTo(2); // offsets never restart
 	}
 
 	@Test

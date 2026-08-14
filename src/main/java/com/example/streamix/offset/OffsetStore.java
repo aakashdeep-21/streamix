@@ -5,6 +5,7 @@ import java.util.OptionalLong;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.example.streamix.core.TopicPartition;
@@ -27,10 +28,16 @@ public class OffsetStore {
 		journal.replay(committed::put);
 	}
 
-	public void commit(String group, String topic, int partition, long offset) {
+	// Synchronized with snapshotTick so no commit can slip between map copy and journal truncation.
+	public synchronized void commit(String group, String topic, int partition, long offset) {
 		GroupTopicPartition key = new GroupTopicPartition(group, topic, partition);
 		committed.put(key, offset);
 		journal.append(key, offset);
+	}
+
+	@Scheduled(fixedDelayString = "${streamix.offset-snapshot-ms:300000}")
+	public synchronized void snapshotTick() {
+		journal.snapshot(Map.copyOf(committed));
 	}
 
 	public OptionalLong fetch(String group, String topic, int partition) {

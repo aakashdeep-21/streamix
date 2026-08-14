@@ -23,4 +23,11 @@ public interface LogStorage {
 
 	// Topics found on disk at startup; empty for non-durable impls.
 	default List<TopicMetadata> recoveredTopics() { return List.of(); }
+
+	// Drops retained data older than minTimestampMs and beyond maxBytes (<=0 = unlimited); returns removed count.
+	long enforceRetention(String topic, int partition, long minTimestampMs, long maxBytes);
+
+	default long totalRetainedBytes() { return 0; }
+
+	default int totalSegments() { return 0; }
 }

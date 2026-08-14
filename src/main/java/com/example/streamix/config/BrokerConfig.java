@@ -25,7 +25,7 @@ public class BrokerConfig {
 	@Bean
 	@ConditionalOnProperty(name = "streamix.storage", havingValue = "file", matchIfMissing = true)
 	LogStorage fileLogStorage(BrokerProperties props) {
-		FileLogStorage storage = new FileLogStorage(Path.of(props.getDataDir()));
+		FileLogStorage storage = new FileLogStorage(props);
 		storage.recover();
 		return storage;
 	}

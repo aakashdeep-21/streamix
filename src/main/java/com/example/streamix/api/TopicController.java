@@ -32,7 +32,7 @@ public class TopicController {
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
 	public TopicMetadata create(@Valid @RequestBody CreateTopicRequest req) {
-		return engine.createTopic(req.name(), req.partitions());
+		return engine.createTopic(req.name(), req.partitions(), req.retentionMs(), req.retentionBytes());
 	}
 
 	@GetMapping
@@ -43,7 +43,8 @@ public class TopicController {
 	@GetMapping("/{topic}")
 	public TopicDetailsResponse describe(@PathVariable String topic) {
 		TopicMetadata meta = engine.topic(topic);
-		return new TopicDetailsResponse(meta.name(), meta.partitions(), meta.createdAt(), engine.topicOffsets(topic));
+		return new TopicDetailsResponse(meta.name(), meta.partitions(), meta.createdAt(),
+				meta.retentionMs(), meta.retentionBytes(), engine.topicOffsets(topic));
 	}
 
 	@DeleteMapping("/{topic}")
