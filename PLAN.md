@@ -36,7 +36,7 @@ config/    BrokerProperties (data dir, retention, session timeout, batch/message
 | `POST /topics/{t}/messages/batch` | Publish many (non-transactional) → per-message acks |
 | `POST /groups/{g}/consumers` | Register consumer `{consumerId, topics, sessionTimeoutMs?}` → triggers rebalance; duplicate live id → 409 |
 | `DELETE /groups/{g}/consumers/{id}` | Leave group → rebalance |
-| `GET /groups/{g}/consumers/{id}/messages?max=` | Poll assigned partitions from fetch position; empty list when caught up; acts as heartbeat |
+| `GET /groups/{g}/consumers/{id}/messages?max=&waitMs=` | Poll assigned partitions from fetch position; `waitMs>0` long-polls until data arrives; acts as heartbeat |
 | `POST /groups/{g}/consumers/{id}/offsets` | Commit `[{topic, partition, offset}]` — offset = next to read |
 | `GET /groups/{g}/offsets?topic=` | Inspect committed offsets (ops/debugging) |
 | `GET /actuator/health`, `/actuator/metrics` | Liveness + broker metrics (topic/message counts, group sizes, lag) |
@@ -63,4 +63,4 @@ config/    BrokerProperties (data dir, retention, session timeout, batch/message
 ## Phases
 1. **Core broker (next):** topics, partitioning, single/batch publish, consumer groups + rebalance, poll/commit, actuator health/metrics, error handling; simple durability = append-only file per partition + offsets journal with startup replay; Dockerfile + `railway.json` deploy artifacts; unit + MockMvc tests (in-memory storage).
 2. **Retention + full persistence:** rolling segment files, time/size trimming by deleting expired segments, offset→position index (bounded-memory reads from disk), configurable flush/fsync policy, offset snapshots; retention/lag metrics.
-3. **Client library:** thin Java producer/consumer SDK (separate Maven module) wrapping the REST API — poll loop, heartbeats, commit helpers — so services don't hand-roll HTTP.
+3. **Client library:** thin Java producer/consumer SDK (`streamix-client` module, Spring-free) — poll loop, heartbeats, auto/manual commit, eviction recovery, batch drain; plus broker long polling (`waitMs`) and OpenAPI/Swagger UI (`/v3/api-docs`) for non-JVM clients.
