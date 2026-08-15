@@ -55,6 +55,8 @@ public final class StreamixConsumer implements AutoCloseable {
 
 	public void start(MessageHandler handler) {
 		if (!running.compareAndSet(false, true)) throw new IllegalStateException("consumer already running");
+		log.info("starting consumer '{}' in group '{}' (topics={}, waitMs={}, autoCommit={})",
+				consumerId, group, topics, waitMs, autoCommit);
 		register();
 		pollThread = new Thread(() -> runLoop(handler), "streamix-consumer-" + group + "-" + consumerId);
 		pollThread.setDaemon(true);
@@ -81,6 +83,7 @@ public final class StreamixConsumer implements AutoCloseable {
 				continue;
 			}
 			if (batch.isEmpty()) continue; // long poll already waited server-side
+			log.debug("received {} message(s)", batch.size());
 			try {
 				handler.handle(batch);
 			} catch (Exception handlerError) {
@@ -105,12 +108,16 @@ public final class StreamixConsumer implements AutoCloseable {
 
 	public long drainAll(MessageHandler handler) {
 		if (running.get()) throw new IllegalStateException("consumer is running in continuous mode");
+		long start = System.currentTimeMillis();
 		register();
 		long total = 0;
 		try {
 			while (true) {
 				List<ConsumedMessage> batch = pollOnce(0);
-				if (batch.isEmpty()) return total;
+				if (batch.isEmpty()) {
+					log.info("drained {} message(s) for group '{}' in {}ms", total, group, System.currentTimeMillis() - start);
+					return total;
+				}
 				try {
 					handler.handle(batch);
 				} catch (Exception e) {
@@ -159,6 +166,7 @@ public final class StreamixConsumer implements AutoCloseable {
 					Thread.currentThread().interrupt();
 				}
 			}
+			log.info("consumer '{}' in group '{}' stopped", consumerId, group);
 		}
 	}
 
@@ -173,6 +181,7 @@ public final class StreamixConsumer implements AutoCloseable {
 	private void commitRaw(List<Map<String, Object>> offsets) {
 		if (offsets.isEmpty()) return;
 		http.post(consumerPath() + "/offsets", Map.of("offsets", offsets), Void.class);
+		log.debug("committed {}", offsets);
 	}
 
 	// Joins the group (start() and drainAll() call this for you); takes over a stale duplicate session.

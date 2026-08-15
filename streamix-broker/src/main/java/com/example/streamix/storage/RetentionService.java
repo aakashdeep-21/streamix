@@ -35,10 +35,14 @@ public class RetentionService {
 
 	@Scheduled(fixedDelayString = "${streamix.retention-sweep-ms:60000}")
 	public void sweep() {
+		long start = System.currentTimeMillis();
+		long totalRemoved = 0;
+		int topicsChecked = 0;
 		for (TopicMetadata meta : topicManager.list()) {
 			long ageMs = meta.retentionMs() != null ? meta.retentionMs() : props.getRetentionMs();
 			long maxBytes = meta.retentionBytes() != null ? meta.retentionBytes() : props.getRetentionBytes();
 			if (ageMs <= 0 && maxBytes <= 0) continue;
+			topicsChecked++;
 			long minTimestamp = ageMs > 0 ? clock.millis() - ageMs : Long.MIN_VALUE;
 			long removed = 0;
 			for (int p = 0; p < meta.partitions(); p++) {
@@ -50,8 +54,11 @@ public class RetentionService {
 			}
 			if (removed > 0) {
 				metrics.trimmed(removed);
+				totalRemoved += removed;
 				log.info("retention trimmed {} messages from topic '{}'", removed, meta.name());
 			}
 		}
+		log.debug("retention sweep: {} topic(s) checked, {} message(s) trimmed in {}ms",
+				topicsChecked, totalRemoved, System.currentTimeMillis() - start);
 	}
 }

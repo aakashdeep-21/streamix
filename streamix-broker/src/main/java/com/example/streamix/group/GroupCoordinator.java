@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -64,7 +65,8 @@ public class GroupCoordinator {
 				}
 				group.members.put(consumerId, new ConsumerSession(consumerId, topics, timeout, now));
 				rebalance(group);
-				log.info("consumer '{}' joined group '{}' subscribing {}", consumerId, groupId, topics);
+				log.info("consumer '{}' joined group '{}' subscribing {} (sessionTimeoutMs={})",
+						consumerId, groupId, topics, timeout);
 				return new RegistrationResult(timeout, assignedTo(group, consumerId));
 			}
 		}
@@ -193,6 +195,14 @@ public class GroupCoordinator {
 			for (int p = 0; p < meta.partitions(); p++) {
 				group.assignment.put(new TopicPartition(topic, p), subscribers.get(p % subscribers.size()));
 			}
+		}
+		if (log.isInfoEnabled()) {
+			Map<String, List<String>> byConsumer = new TreeMap<>();
+			group.assignment.forEach((tp, c) ->
+					byConsumer.computeIfAbsent(c, k -> new ArrayList<>()).add(tp.topic() + "-" + tp.partition()));
+			byConsumer.values().forEach(Collections::sort);
+			log.info("group '{}' rebalanced (epoch {}, {} member(s)): {}",
+					group.groupId, group.epoch, group.members.size(), byConsumer);
 		}
 	}
 

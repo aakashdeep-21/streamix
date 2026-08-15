@@ -9,6 +9,9 @@ import java.nio.file.StandardCopyOption;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.example.streamix.storage.JsonLines;
 
 import tools.jackson.databind.ObjectMapper;
@@ -16,6 +19,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 // Commits append to offsets.log; snapshots compact everything into offsets.snapshot and empty the log.
 public class FileOffsetJournal implements OffsetJournal {
+
+	private static final Logger log = LoggerFactory.getLogger(FileOffsetJournal.class);
 
 	public record Entry(String group, String topic, int partition, long offset) {}
 
@@ -45,6 +50,8 @@ public class FileOffsetJournal implements OffsetJournal {
 	@Override
 	public synchronized void snapshot(Map<GroupTopicPartition, Long> state) {
 		try {
+			// nothing durable yet → skip instead of writing empty snapshots forever
+			if (state.isEmpty() && !Files.exists(journalFile) && !Files.exists(snapshotFile)) return;
 			Files.createDirectories(snapshotFile.getParent());
 			StringBuilder content = new StringBuilder();
 			for (Map.Entry<GroupTopicPartition, Long> e : state.entrySet()) {
@@ -60,6 +67,7 @@ public class FileOffsetJournal implements OffsetJournal {
 				out = null;
 			}
 			Files.deleteIfExists(journalFile); // the snapshot now owns all durable state
+			log.debug("snapshotted {} committed offset(s); journal truncated", state.size());
 		} catch (IOException e) {
 			throw new UncheckedIOException("offset snapshot failed", e);
 		}

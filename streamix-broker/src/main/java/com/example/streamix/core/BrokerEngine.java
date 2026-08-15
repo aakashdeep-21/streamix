@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.example.streamix.config.BrokerProperties;
@@ -21,6 +23,8 @@ import tools.jackson.databind.json.JsonMapper;
 // Single entry point for the API layer; orchestrates topics, storage, groups and offsets.
 @Service
 public class BrokerEngine {
+
+	private static final Logger log = LoggerFactory.getLogger(BrokerEngine.class);
 
 	private final TopicManager topicManager;
 	private final Partitioner partitioner;
@@ -64,24 +68,28 @@ public class BrokerEngine {
 
 	// Order matters: consumers are unassigned before the log disappears.
 	public void deleteTopic(String name) {
+		TopicMetadata meta = topicManager.get(name);
 		topicManager.delete(name);
 		coordinator.onTopicDeleted(name);
 		offsetStore.purgeTopic(name);
 		partitioner.forget(name);
 		storage.deleteLog(name);
+		log.info("deleted topic '{}' ({} partitions): log removed, offsets purged, consumers unassigned",
+				name, meta.partitions());
 	}
 
 	// --- publish ---
 
 	public PublishResult publish(String topic, String key, Object value, Map<String, String> headers) {
 		TopicMetadata meta = topicManager.get(topic);
-		enforceSize(value);
+		int size = enforceSize(value);
 		int partition = partitioner.partition(topic, key, meta.partitions());
 		Message m = storage.append(topic, partition, key, value, headers);
 		metrics.published(1);
 		synchronized (pollSignal) {
 			pollSignal.notifyAll();
 		}
+		log.debug("published {}-{} offset {} ({} bytes, key={})", topic, partition, m.offset(), size, key);
 		return new PublishResult(topic, partition, m.offset(), m.timestamp());
 	}
 
@@ -91,7 +99,9 @@ public class BrokerEngine {
 			throw BrokerException.invalidArgument("batch of " + records.size() + " exceeds max " + props.getBatchMaxSize());
 		}
 		topicManager.get(topic); // fail fast before appending anything
-		return records.stream().map(r -> publish(topic, r.key(), r.value(), r.headers())).toList();
+		List<PublishResult> acks = records.stream().map(r -> publish(topic, r.key(), r.value(), r.headers())).toList();
+		log.debug("batch of {} published to '{}'", acks.size(), topic);
+		return acks;
 	}
 
 	// --- consume ---
@@ -110,12 +120,17 @@ public class BrokerEngine {
 		if (max < 1) throw BrokerException.invalidArgument("max must be >= 1");
 		long wait = waitMs == null ? 0 : waitMs;
 		if (wait < 0) throw BrokerException.invalidArgument("waitMs must be >= 0");
-		long deadline = System.currentTimeMillis() + Math.min(wait, props.getPollMaxWaitMs());
+		long start = System.currentTimeMillis();
+		long deadline = start + Math.min(wait, props.getPollMaxWaitMs());
 		while (true) {
 			List<PolledMessage> polled = coordinator.poll(groupId, consumerId, Math.min(max, props.getPollMaxLimit()));
 			long remaining = deadline - System.currentTimeMillis();
 			if (!polled.isEmpty() || remaining <= 0) {
 				metrics.consumed(polled.size());
+				if (!polled.isEmpty()) {
+					log.debug("group '{}' consumer '{}' polled {} message(s) in {}ms",
+							groupId, consumerId, polled.size(), System.currentTimeMillis() - start);
+				}
 				return polled;
 			}
 			synchronized (pollSignal) {
@@ -132,6 +147,7 @@ public class BrokerEngine {
 	public void commit(String groupId, String consumerId, List<OffsetCommit> entries) {
 		coordinator.commit(groupId, consumerId, entries);
 		metrics.committed(entries.size());
+		log.debug("group '{}' consumer '{}' committed {}", groupId, consumerId, entries);
 	}
 
 	public List<GroupOffsetView> groupOffsets(String groupId, String topicFilter) {
@@ -146,10 +162,11 @@ public class BrokerEngine {
 		return out;
 	}
 
-	private void enforceSize(Object value) {
+	private int enforceSize(Object value) {
 		byte[] bytes = sizeMapper.writeValueAsBytes(value);
 		if (bytes.length > props.getMaxMessageBytes()) {
 			throw BrokerException.messageTooLarge(bytes.length, props.getMaxMessageBytes());
 		}
+		return bytes.length;
 	}
 }

@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import com.example.streamix.config.BrokerProperties;
@@ -15,6 +17,7 @@ import jakarta.annotation.PostConstruct;
 @Component
 public class TopicManager {
 
+	private static final Logger log = LoggerFactory.getLogger(TopicManager.class);
 	private static final Pattern NAME = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$");
 
 	private final ConcurrentHashMap<String, TopicMetadata> topics = new ConcurrentHashMap<>();
@@ -50,6 +53,8 @@ public class TopicManager {
 			topics.remove(name);
 			throw e;
 		}
+		log.info("created topic '{}': {} partitions, retentionMs={}, retentionBytes={}",
+				name, partitions, retentionMs, retentionBytes);
 		return meta;
 	}
 

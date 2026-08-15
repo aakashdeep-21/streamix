@@ -49,6 +49,7 @@ public class FileLogStorage implements LogStorage {
 
 	// Startup-only: rebuild all partition logs from disk before the broker serves traffic.
 	public void recover() {
+		long start = System.currentTimeMillis();
 		try {
 			Files.createDirectories(topicsDir);
 			try (Stream<Path> dirs = Files.list(topicsDir)) {
@@ -59,6 +60,8 @@ public class FileLogStorage implements LogStorage {
 		} catch (IOException e) {
 			throw new UncheckedIOException("log recovery failed", e);
 		}
+		log.info("recovery complete: {} topic(s), {} segment(s), {} bytes in {}ms",
+				recovered.size(), totalSegments(), totalRetainedBytes(), System.currentTimeMillis() - start);
 	}
 
 	private void recoverTopic(Path dir) throws IOException {

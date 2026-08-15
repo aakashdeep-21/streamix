@@ -25,6 +25,7 @@ public class ApiExceptionHandler {
 
 	@ExceptionHandler(BrokerException.class)
 	ResponseEntity<ApiError> broker(BrokerException ex, HttpServletRequest req) {
+		log.debug("rejected {} {}: {} - {}", req.getMethod(), req.getRequestURI(), ex.code(), ex.getMessage());
 		return build(ex.code().status(), ex.code().name(), ex.getMessage(), req);
 	}
 
@@ -34,16 +35,19 @@ public class ApiExceptionHandler {
 				.map(f -> f.getField() + " " + f.getDefaultMessage())
 				.sorted()
 				.collect(Collectors.joining("; "));
+		log.debug("validation failed for {} {}: {}", req.getMethod(), req.getRequestURI(), message);
 		return build(400, "VALIDATION_FAILED", message, req);
 	}
 
 	@ExceptionHandler(HttpMessageNotReadableException.class)
 	ResponseEntity<ApiError> unreadable(HttpMessageNotReadableException ex, HttpServletRequest req) {
+		log.debug("malformed body for {} {}", req.getMethod(), req.getRequestURI());
 		return build(400, "MALFORMED_REQUEST", "request body is not valid JSON for this endpoint", req);
 	}
 
 	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
 	ResponseEntity<ApiError> typeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest req) {
+		log.debug("bad parameter '{}' for {} {}", ex.getName(), req.getMethod(), req.getRequestURI());
 		return build(400, "INVALID_ARGUMENT", "parameter '" + ex.getName() + "' has an invalid value", req);
 	}
 

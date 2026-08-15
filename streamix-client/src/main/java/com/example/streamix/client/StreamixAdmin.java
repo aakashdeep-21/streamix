@@ -5,8 +5,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 // Topic administration; ensureTopic is the idempotent service-startup helper.
 public final class StreamixAdmin {
+
+	private static final Logger log = LoggerFactory.getLogger(StreamixAdmin.class);
 
 	private final HttpJson http;
 
@@ -28,7 +33,9 @@ public final class StreamixAdmin {
 		body.put("partitions", partitions);
 		if (retentionMs != null) body.put("retentionMs", retentionMs);
 		if (retentionBytes != null) body.put("retentionBytes", retentionBytes);
-		return http.post("/api/v1/topics", body, TopicInfo.class);
+		TopicInfo info = http.post("/api/v1/topics", body, TopicInfo.class);
+		log.info("created topic '{}' ({} partitions)", info.name(), info.partitions());
+		return info;
 	}
 
 	// Creates the topic if missing; existing topics are left untouched (partition count is not reconciled).
@@ -37,6 +44,7 @@ public final class StreamixAdmin {
 			createTopic(name, partitions);
 		} catch (StreamixApiException e) {
 			if (!e.is("DUPLICATE_TOPIC")) throw e;
+			log.debug("topic '{}' already exists", name);
 		}
 		return describe(name);
 	}
@@ -51,6 +59,7 @@ public final class StreamixAdmin {
 
 	public void deleteTopic(String name) {
 		http.delete("/api/v1/topics/" + HttpJson.seg(name));
+		log.info("deleted topic '{}'", name);
 	}
 
 	public List<GroupOffset> groupOffsets(String group) {

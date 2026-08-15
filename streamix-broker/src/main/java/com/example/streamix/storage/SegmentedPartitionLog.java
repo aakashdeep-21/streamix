@@ -94,6 +94,7 @@ final class SegmentedPartitionLog {
 			if (!segments.isEmpty()) {
 				beginOffset = segments.get(0).baseOffset;
 				nextOffset = expected;
+				log.debug("recovered {}: {} segment(s), offsets [{}, {})", dir, segments.size(), beginOffset, nextOffset);
 			}
 		} catch (IOException e) {
 			throw new UncheckedIOException("recovery failed for " + dir, e);

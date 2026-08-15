@@ -5,6 +5,8 @@ import java.util.OptionalLong;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -16,6 +18,8 @@ import jakarta.annotation.PostConstruct;
 @Component
 public class OffsetStore {
 
+	private static final Logger log = LoggerFactory.getLogger(OffsetStore.class);
+
 	private final ConcurrentHashMap<GroupTopicPartition, Long> committed = new ConcurrentHashMap<>();
 	private final OffsetJournal journal;
 
@@ -26,6 +30,7 @@ public class OffsetStore {
 	@PostConstruct
 	void replayJournal() {
 		journal.replay(committed::put);
+		if (!committed.isEmpty()) log.info("restored {} committed offset(s) from disk", committed.size());
 	}
 
 	// Synchronized with snapshotTick so no commit can slip between map copy and journal truncation.
@@ -56,8 +61,11 @@ public class OffsetStore {
 		return out;
 	}
 
-	// Journal rows for deleted topics persist until Phase 2 snapshotting; read views filter them out.
+	// Journal rows for deleted topics persist until the next snapshot; read views filter them out.
 	public void purgeTopic(String topic) {
+		int before = committed.size();
 		committed.keySet().removeIf(k -> k.topic().equals(topic));
+		int removed = before - committed.size();
+		if (removed > 0) log.debug("purged {} committed offset(s) for deleted topic '{}'", removed, topic);
 	}
 }

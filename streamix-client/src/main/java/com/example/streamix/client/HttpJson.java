@@ -9,9 +9,14 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 // HTTP core: JSON in/out, broker errors → StreamixApiException, IO/5xx retried with backoff.
 // Retries can duplicate a publish whose ack was lost — consistent with at-least-once delivery.
 final class HttpJson {
+
+	private static final Logger log = LoggerFactory.getLogger(HttpJson.class);
 
 	private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 	private final String baseUrl;
@@ -49,6 +54,7 @@ final class HttpJson {
 	private <T> T exchange(HttpRequest.Builder builder, Class<T> type) {
 		HttpRequest request = builder.header("Accept", "application/json").build();
 		for (int attempt = 0; ; attempt++) {
+			String failure;
 			try {
 				HttpResponse<String> res = http.send(request, HttpResponse.BodyHandlers.ofString());
 				if (res.statusCode() < 300) {
@@ -57,14 +63,17 @@ final class HttpJson {
 				}
 				StreamixApiException apiError = toApiException(res);
 				if (res.statusCode() < 500 || attempt >= maxRetries) throw apiError;
+				failure = apiError.getMessage();
 			} catch (IOException e) {
 				if (attempt >= maxRetries) {
 					throw new StreamixIoException("request failed: " + request.method() + " " + request.uri(), e);
 				}
+				failure = e.toString();
 			} catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
 				throw new StreamixIoException("interrupted: " + request.uri(), e);
 			}
+			log.warn("retrying {} {} (attempt {}/{}): {}", request.method(), request.uri(), attempt + 1, maxRetries, failure);
 			sleep(backoffMs * (attempt + 1));
 		}
 	}
